@@ -50,7 +50,12 @@ Network admins can:
 - Enable Mixpanel for all sites in the network
 - Enable for specific sites only (by site ID)
 - Allow individual site admins to override network settings
-- Configure centralized tracking settings
+- Configure centralized tracking settings including:
+  - Network-wide Mixpanel token
+  - Session replay enable/disable for all sites
+  - Tracking mode (pageviews, all events, or specific events)
+  - Specific events configuration
+  - WordPress performance tracking toggle
 
 ## 🔒 Privacy & GDPR
 
@@ -113,6 +118,17 @@ All code in this plugin is original work and GPL v2 compatible.
 Contributions are welcome! Please submit a pull request with your improvements.
 
 ## Changelog
+
+### v1.1.0
+- Enhanced network-wide settings for multisite installations
+- Network admins can now configure all Mixpanel settings centrally:
+  - Mixpanel token for all sites
+  - Session replay enable/disable
+  - Tracking mode configuration
+  - Specific events settings
+  - WordPress performance tracking
+- Improved site-level settings interface with network setting indicators
+- Better UX for showing when network settings are in use vs. site overrides
 
 ### v1.0.0
 - Initial release

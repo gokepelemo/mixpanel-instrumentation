@@ -3,7 +3,7 @@
 Plugin Name: Mixpanel Instrumentation
 Plugin URI: https://github.com/gokepelemo/mixpanel-instrumentation
 Description: Adds Mixpanel analytics and optional session replay to your WordPress site frontend. Multisite compatible with network admin controls and site-specific overrides. Supports tracking pageviews, all JS events, or specific JS events.
-Version: 1.0.0
+Version: 1.1.0
 Author: Goke Pelemo
 Author URI: https://github.com/gokepelemo
 License: GPLv2 or later
@@ -77,7 +77,12 @@ class MixpanelInstrumentation {
     private static $network_options = [
         'mixpanel_network_enabled',
         'mixpanel_network_sites',
-        'mixpanel_network_allow_override'
+        'mixpanel_network_allow_override',
+        'mixpanel_token',
+        'mixpanel_session_replay',
+        'mixpanel_tracking_mode',
+        'mixpanel_specific_events',
+        'mixpanel_wp_performance_tracking'
     ];
     
     /**
@@ -439,6 +444,7 @@ class MixpanelInstrumentation {
         $network_allow_override = is_multisite() ? get_site_option('mixpanel_network_allow_override', 0) : 0;
         $site_id = is_multisite() ? get_current_blog_id() : null;
         $show_settings = true;
+        $using_network_settings = false;
         
         if (is_multisite()) {
             switch ($network_enabled) {
@@ -446,73 +452,156 @@ class MixpanelInstrumentation {
                     $show_settings = false;
                     break;
                 case 'all':
-                    $show_settings = (bool)$network_allow_override;
+                    $using_network_settings = true;
+                    $show_settings = true;
                     break;
                 case 'specific':
                     $ids = array_filter(array_map('trim', explode(',', $network_sites)));
-                    $show_settings = in_array($site_id, $ids) ? (bool)$network_allow_override : false;
+                    if (in_array($site_id, $ids)) {
+                        $using_network_settings = true;
+                        $show_settings = true;
+                    } else {
+                        $show_settings = false;
+                    }
                     break;
             }
         }
         
-        $tracking_mode = get_option('mixpanel_tracking_mode', 'pageviews');
-        $specific_events = get_option('mixpanel_specific_events', '');
         $override_network = get_option('mixpanel_override_network', 0);
+        $can_override = $network_allow_override && $using_network_settings;
+        $show_override_form = $can_override && $override_network;
+        
+        // Get values (network or site-specific)
+        if ($using_network_settings && !$override_network) {
+            $token = get_site_option('mixpanel_token', '');
+            $session_replay = get_site_option('mixpanel_session_replay', 0);
+            $tracking_mode = get_site_option('mixpanel_tracking_mode', 'pageviews');
+            $specific_events = get_site_option('mixpanel_specific_events', '');
+            $wp_performance_tracking = get_site_option('mixpanel_wp_performance_tracking', 0);
+        } else {
+            $token = get_option('mixpanel_token', '');
+            $session_replay = get_option('mixpanel_session_replay', 0);
+            $tracking_mode = get_option('mixpanel_tracking_mode', 'pageviews');
+            $specific_events = get_option('mixpanel_specific_events', '');
+            $wp_performance_tracking = get_option('mixpanel_wp_performance_tracking', 0);
+        }
         ?>
         <div class="wrap">
             <h1>Mixpanel Instrumentation Settings</h1>
             <?php if ($show_settings): ?>
-            <form method="post" action="options.php">
-                <?php settings_fields('mixpanel_instrumentation'); ?>
-                <?php do_settings_sections('mixpanel_instrumentation'); ?>
+                <?php if ($using_network_settings && !$override_network): ?>
+                <div class="notice notice-info">
+                    <p><strong>Notice:</strong> You are using network-wide settings configured by the network administrator.
+                    <?php if ($can_override): ?>
+                        You can enable site-specific overrides below.
+                    <?php endif; ?>
+                    </p>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($show_override_form || !$using_network_settings): ?>
+                <form method="post" action="options.php">
+                    <?php settings_fields('mixpanel_instrumentation'); ?>
+                    <?php do_settings_sections('mixpanel_instrumentation'); ?>
+                    <table class="form-table">
+                        <?php if ($can_override): ?>
+                        <tr valign="top">
+                            <th scope="row">Override Network Settings</th>
+                            <td><input type="checkbox" name="mixpanel_override_network" value="1" <?php checked($override_network, 1); ?> /> Enable site-specific settings</td>
+                        </tr>
+                        <?php endif; ?>
+                        <tr valign="top">
+                            <th scope="row">Mixpanel Token</th>
+                            <td><input type="text" name="mixpanel_token" value="<?php echo esc_attr($token); ?>" size="40" placeholder="Your Mixpanel project token" /></td>
+                        </tr>
+                        <tr valign="top">
+                            <th scope="row">Enable Session Replay</th>
+                            <td><input type="checkbox" name="mixpanel_session_replay" value="1" <?php checked(1, $session_replay); ?> /> Enable Mixpanel session replay</td>
+                        </tr>
+                        <tr valign="top">
+                            <th scope="row">Tracking Mode</th>
+                            <td>
+                                <select name="mixpanel_tracking_mode" id="mixpanel_tracking_mode">
+                                    <option value="pageviews" <?php selected($tracking_mode, 'pageviews'); ?>>Track Pageviews Only</option>
+                                    <option value="all" <?php selected($tracking_mode, 'all'); ?>>Track All Events (Full Autocapture)</option>
+                                    <option value="specific" <?php selected($tracking_mode, 'specific'); ?>>Track Specific Events</option>
+                                </select>
+                                <p class="description">Uses Mixpanel's autocapture feature for comprehensive event tracking without manual coding.</p>
+                            </td>
+                        </tr>
+                        <tr valign="top" id="specific_events_row" style="<?php echo ($tracking_mode === 'specific') ? '' : 'display:none;'; ?>">
+                            <th scope="row">Specific Events</th>
+                            <td>
+                                <input type="text" name="mixpanel_specific_events" value="<?php echo esc_attr($specific_events); ?>" size="60" placeholder="pageview,click,input,submit,scroll,rage_click" />
+                                <p class="description">Available events: <strong>pageview</strong>, <strong>click</strong>, <strong>input</strong>, <strong>submit</strong>, <strong>scroll</strong>, <strong>rage_click</strong>, <strong>capture_text_content</strong></p>
+                            </td>
+                        </tr>
+                        <tr valign="top">
+                            <th scope="row">WordPress Performance Tracking</th>
+                            <td>
+                                <input type="checkbox" name="mixpanel_wp_performance_tracking" value="1" <?php checked(1, $wp_performance_tracking); ?> /> Track WordPress core function performance
+                                <p class="description">Monitor page load times, database queries, memory usage, and WordPress hook execution times</p>
+                            </td>
+                        </tr>
+                    </table>
+                    <?php submit_button(); ?>
+                </form>
+                <script>
+                document.getElementById('mixpanel_tracking_mode').addEventListener('change', function() {
+                    document.getElementById('specific_events_row').style.display = this.value === 'specific' ? '' : 'none';
+                });
+                </script>
+                <?php else: ?>
                 <table class="form-table">
-                    <?php if (is_multisite() && $network_allow_override): ?>
-                    <tr valign="top">
-                        <th scope="row">Override Network Settings</th>
-                        <td><input type="checkbox" name="mixpanel_override_network" value="1" <?php checked($override_network, 1); ?> /> Enable site-specific settings</td>
-                    </tr>
+                    <?php if ($can_override): ?>
+                    <form method="post" action="options.php">
+                        <?php settings_fields('mixpanel_instrumentation'); ?>
+                        <tr valign="top">
+                            <th scope="row">Override Network Settings</th>
+                            <td><input type="checkbox" name="mixpanel_override_network" value="1" <?php checked($override_network, 1); ?> /> Enable site-specific settings</td>
+                        </tr>
+                    </table>
+                    <?php submit_button('Update Override Setting'); ?>
+                    </form>
+                    <table class="form-table">
                     <?php endif; ?>
                     <tr valign="top">
                         <th scope="row">Mixpanel Token</th>
-                        <td><input type="text" name="mixpanel_token" value="<?php echo esc_attr(get_option('mixpanel_token')); ?>" size="40" placeholder="Your Mixpanel project token" /></td>
+                        <td><input type="text" value="<?php echo esc_attr($token); ?>" size="40" readonly /> <em>(Network Setting)</em></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row">Enable Session Replay</th>
-                        <td><input type="checkbox" name="mixpanel_session_replay" value="1" <?php checked(1, get_option('mixpanel_session_replay')); ?> /> Enable Mixpanel session replay</td>
+                        <td><input type="checkbox" <?php checked(1, $session_replay); ?> disabled /> <em>(Network Setting)</em></td>
                     </tr>
                     <tr valign="top">
                         <th scope="row">Tracking Mode</th>
                         <td>
-                            <select name="mixpanel_tracking_mode" id="mixpanel_tracking_mode">
+                            <select disabled>
                                 <option value="pageviews" <?php selected($tracking_mode, 'pageviews'); ?>>Track Pageviews Only</option>
                                 <option value="all" <?php selected($tracking_mode, 'all'); ?>>Track All Events (Full Autocapture)</option>
                                 <option value="specific" <?php selected($tracking_mode, 'specific'); ?>>Track Specific Events</option>
-                            </select>
+                            </select> <em>(Network Setting)</em>
                             <p class="description">Uses Mixpanel's autocapture feature for comprehensive event tracking without manual coding.</p>
                         </td>
                     </tr>
-                    <tr valign="top" id="specific_events_row" style="<?php echo ($tracking_mode === 'specific') ? '' : 'display:none;'; ?>">
+                    <?php if ($tracking_mode === 'specific'): ?>
+                    <tr valign="top">
                         <th scope="row">Specific Events</th>
                         <td>
-                            <input type="text" name="mixpanel_specific_events" value="<?php echo esc_attr($specific_events); ?>" size="60" placeholder="pageview,click,input,submit,scroll,rage_click" />
+                            <input type="text" value="<?php echo esc_attr($specific_events); ?>" size="60" readonly /> <em>(Network Setting)</em>
                             <p class="description">Available events: <strong>pageview</strong>, <strong>click</strong>, <strong>input</strong>, <strong>submit</strong>, <strong>scroll</strong>, <strong>rage_click</strong>, <strong>capture_text_content</strong></p>
                         </td>
                     </tr>
+                    <?php endif; ?>
                     <tr valign="top">
                         <th scope="row">WordPress Performance Tracking</th>
                         <td>
-                            <input type="checkbox" name="mixpanel_wp_performance_tracking" value="1" <?php checked(1, get_option('mixpanel_wp_performance_tracking')); ?> /> Track WordPress core function performance
+                            <input type="checkbox" <?php checked(1, $wp_performance_tracking); ?> disabled /> <em>(Network Setting)</em>
                             <p class="description">Monitor page load times, database queries, memory usage, and WordPress hook execution times</p>
                         </td>
                     </tr>
                 </table>
-                <?php submit_button(); ?>
-            </form>
-            <script>
-            document.getElementById('mixpanel_tracking_mode').addEventListener('change', function() {
-                document.getElementById('specific_events_row').style.display = this.value === 'specific' ? '' : 'none';
-            });
-            </script>
+                <?php endif; ?>
             <?php else: ?>
             <p><strong>Notice:</strong> This plugin is disabled for this site by the network administrator.</p>
             <?php endif; ?>
@@ -533,17 +622,34 @@ class MixpanelInstrumentation {
             update_site_option('mixpanel_network_enabled', sanitize_text_field($_POST['mixpanel_network_enabled'] ?? 'none'));
             update_site_option('mixpanel_network_sites', sanitize_text_field($_POST['mixpanel_network_sites'] ?? ''));
             update_site_option('mixpanel_network_allow_override', !empty($_POST['mixpanel_network_allow_override']) ? 1 : 0);
+            
+            // Save network-wide Mixpanel settings
+            update_site_option('mixpanel_token', sanitize_text_field($_POST['mixpanel_token'] ?? ''));
+            update_site_option('mixpanel_session_replay', !empty($_POST['mixpanel_session_replay']) ? 1 : 0);
+            update_site_option('mixpanel_tracking_mode', sanitize_text_field($_POST['mixpanel_tracking_mode'] ?? 'pageviews'));
+            update_site_option('mixpanel_specific_events', sanitize_text_field($_POST['mixpanel_specific_events'] ?? ''));
+            update_site_option('mixpanel_wp_performance_tracking', !empty($_POST['mixpanel_wp_performance_tracking']) ? 1 : 0);
+            
             echo '<div class="notice notice-success"><p>Settings saved.</p></div>';
         }
         
         $enabled = get_site_option('mixpanel_network_enabled', 'none');
         $sites = get_site_option('mixpanel_network_sites', '');
         $allow_override = get_site_option('mixpanel_network_allow_override', 0);
+        
+        // Get network-wide settings
+        $token = get_site_option('mixpanel_token', '');
+        $session_replay = get_site_option('mixpanel_session_replay', 0);
+        $tracking_mode = get_site_option('mixpanel_tracking_mode', 'pageviews');
+        $specific_events = get_site_option('mixpanel_specific_events', '');
+        $wp_performance_tracking = get_site_option('mixpanel_wp_performance_tracking', 0);
         ?>
         <div class="wrap">
             <h1>Mixpanel Instrumentation Network Settings</h1>
             <form method="post">
                 <?php wp_nonce_field('mixpanel_instrumentation_network_settings'); ?>
+                
+                <h2>Network Configuration</h2>
                 <table class="form-table">
                     <tr valign="top">
                         <th scope="row">Enable Mixpanel</th>
@@ -567,11 +673,53 @@ class MixpanelInstrumentation {
                         <td><input type="checkbox" name="mixpanel_network_allow_override" value="1" <?php checked($allow_override, 1); ?> /> Allow individual sites to override these settings</td>
                     </tr>
                 </table>
+                
+                <h2>Network-Wide Mixpanel Settings</h2>
+                <p class="description">These settings will be applied across all enabled sites unless overridden by individual sites.</p>
+                <table class="form-table">
+                    <tr valign="top">
+                        <th scope="row">Mixpanel Token</th>
+                        <td><input type="text" name="mixpanel_token" value="<?php echo esc_attr($token); ?>" size="40" placeholder="Your network-wide Mixpanel project token" /></td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row">Enable Session Replay</th>
+                        <td><input type="checkbox" name="mixpanel_session_replay" value="1" <?php checked($session_replay, 1); ?> /> Enable Mixpanel session replay across the network</td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row">Tracking Mode</th>
+                        <td>
+                            <select name="mixpanel_tracking_mode" id="mixpanel_tracking_mode">
+                                <option value="pageviews" <?php selected($tracking_mode, 'pageviews'); ?>>Track Pageviews Only</option>
+                                <option value="all" <?php selected($tracking_mode, 'all'); ?>>Track All Events (Full Autocapture)</option>
+                                <option value="specific" <?php selected($tracking_mode, 'specific'); ?>>Track Specific Events</option>
+                            </select>
+                            <p class="description">Uses Mixpanel's autocapture feature for comprehensive event tracking without manual coding.</p>
+                        </td>
+                    </tr>
+                    <tr valign="top" id="network_specific_events_row" style="<?php echo ($tracking_mode === 'specific') ? '' : 'display:none;'; ?>">
+                        <th scope="row">Specific Events</th>
+                        <td>
+                            <input type="text" name="mixpanel_specific_events" value="<?php echo esc_attr($specific_events); ?>" size="60" placeholder="pageview,click,input,submit,scroll,rage_click" />
+                            <p class="description">Available events: <strong>pageview</strong>, <strong>click</strong>, <strong>input</strong>, <strong>submit</strong>, <strong>scroll</strong>, <strong>rage_click</strong>, <strong>capture_text_content</strong></p>
+                        </td>
+                    </tr>
+                    <tr valign="top">
+                        <th scope="row">WordPress Performance Tracking</th>
+                        <td>
+                            <input type="checkbox" name="mixpanel_wp_performance_tracking" value="1" <?php checked($wp_performance_tracking, 1); ?> /> Track WordPress core function performance across the network
+                            <p class="description">Monitor page load times, database queries, memory usage, and WordPress hook execution times</p>
+                        </td>
+                    </tr>
+                </table>
+                
                 <?php submit_button(); ?>
             </form>
             <script>
             document.getElementById('mixpanel_network_enabled').addEventListener('change', function() {
                 document.getElementById('network_sites_row').style.display = this.value === 'specific' ? '' : 'none';
+            });
+            document.getElementById('mixpanel_tracking_mode').addEventListener('change', function() {
+                document.getElementById('network_specific_events_row').style.display = this.value === 'specific' ? '' : 'none';
             });
             </script>
         </div>
