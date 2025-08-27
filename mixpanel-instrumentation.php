@@ -123,9 +123,11 @@ class MixpanelInstrumentation {
         if (is_admin()) {
             add_action('admin_menu', [__CLASS__, 'add_admin_menu']);
             add_action('admin_init', [__CLASS__, 'register_settings']);
+            add_action('admin_notices', [__CLASS__, 'admin_notices']);
             
             if (is_multisite()) {
                 add_action('network_admin_menu', [__CLASS__, 'add_network_admin_menu']);
+                add_action('network_admin_notices', [__CLASS__, 'admin_notices']);
             }
             
             // Clear cache when settings are updated
@@ -373,6 +375,68 @@ class MixpanelInstrumentation {
     }
     
     /**
+     * Display admin notices for configuration issues
+     */
+    public static function admin_notices() {
+        // Only show on plugin settings pages
+        $screen = get_current_screen();
+        if (!$screen || (strpos($screen->id, 'mixpanel') === false && $screen->id !== 'settings_page_mixpanel-instrumentation')) {
+            return;
+        }
+        
+        // Check if plugin is enabled for this site
+        if (!self::is_enabled_for_site()) {
+            if (is_multisite()) {
+                ?>
+                <div class="notice notice-warning">
+                    <p><strong>Mixpanel Instrumentation:</strong> This plugin is disabled for this site by the network administrator. Contact your network admin to enable it.</p>
+                </div>
+                <?php
+            }
+            return;
+        }
+        
+        $settings = self::get_effective_settings();
+        
+        // Check for missing token
+        if (empty($settings['token'])) {
+            ?>
+            <div class="notice notice-error">
+                <p><strong>Mixpanel Instrumentation:</strong> No Mixpanel token configured. Events will not be tracked. Please add your Mixpanel project token below.</p>
+            </div>
+            <?php
+        } else {
+            // Check token format (should be 32 characters alphanumeric)
+            if (!preg_match('/^[a-f0-9]{32}$/', $settings['token'])) {
+                ?>
+                <div class="notice notice-warning">
+                    <p><strong>Mixpanel Instrumentation:</strong> The Mixpanel token format appears invalid. Tokens should be 32-character hexadecimal strings. Please verify your token.</p>
+                </div>
+                <?php
+            }
+        }
+        
+        // Show configuration summary
+        if (!empty($settings['token'])) {
+            $tracking_mode_labels = [
+                'pageviews' => 'Pageviews Only',
+                'all' => 'All Events (Full Autocapture)',
+                'specific' => 'Specific Events'
+            ];
+            ?>
+            <div class="notice notice-info">
+                <p><strong>Mixpanel Configuration:</strong> 
+                Tracking Mode: <?php echo esc_html($tracking_mode_labels[$settings['tracking_mode']] ?? 'Unknown'); ?>
+                <?php if ($settings['session_replay']): ?> | Session Replay: Enabled<?php endif; ?>
+                <?php if ($settings['wp_performance_tracking']): ?> | Performance Tracking: Enabled<?php endif; ?>
+                </p>
+                <p><em>To test: Enable WP_DEBUG in wp-config.php and check browser console for debug information.</em></p>
+            </div>
+            <?php
+        }
+    }
+    
+    /**
      * Inject Mixpanel tracking code
      */
     public static function inject_tracking_code() {
@@ -429,6 +493,34 @@ class MixpanelInstrumentation {
                         mixpanel.replay.init();
                     }
                 });
+            </script>
+            <?php
+        }
+        
+        // Add debugging information if WP_DEBUG is enabled
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            ?>
+            <!-- Mixpanel Debug Information -->
+            <script type="text/javascript">
+                console.log('Mixpanel Debug Info:', {
+                    token: '<?php echo esc_js($settings['token']); ?>',
+                    tracking_mode: '<?php echo esc_js($settings['tracking_mode']); ?>',
+                    session_replay: <?php echo $settings['session_replay'] ? 'true' : 'false'; ?>,
+                    autocapture_config: <?php echo wp_json_encode($autocapture_config); ?>,
+                    mixpanel_loaded: typeof window.mixpanel !== 'undefined',
+                    user_identified: <?php echo $user_data ? 'true' : 'false'; ?>
+                });
+                
+                // Test if Mixpanel is working
+                if (window.mixpanel) {
+                    console.log('Mixpanel is loaded - sending test event');
+                    mixpanel.track('Plugin Debug Test', {
+                        debug: true,
+                        timestamp: new Date().toISOString()
+                    });
+                } else {
+                    console.error('Mixpanel failed to load');
+                }
             </script>
             <?php
         }
