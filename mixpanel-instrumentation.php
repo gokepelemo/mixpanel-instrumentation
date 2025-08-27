@@ -86,6 +86,16 @@ class MixpanelInstrumentation {
     private static $performance_data = [];
     
     /**
+     * Cached settings to avoid repeated database calls
+     */
+    private static $cached_settings = null;
+    
+    /**
+     * Cached site enabled status
+     */
+    private static $cached_enabled = null;
+    
+    /**
      * WordPress core functions to track
      */
     private static $wp_functions_to_track = [
@@ -101,19 +111,36 @@ class MixpanelInstrumentation {
     ];
     
     /**
-     * Initialize the plugin
+     * Initialize the plugin with optimizations
      */
     public static function init() {
-        add_action('admin_menu', [__CLASS__, 'add_admin_menu']);
-        add_action('admin_init', [__CLASS__, 'register_settings']);
-        add_action('wp_head', [__CLASS__, 'inject_tracking_code']);
-        
-        if (is_multisite()) {
-            add_action('network_admin_menu', [__CLASS__, 'add_network_admin_menu']);
+        // Admin-only hooks
+        if (is_admin()) {
+            add_action('admin_menu', [__CLASS__, 'add_admin_menu']);
+            add_action('admin_init', [__CLASS__, 'register_settings']);
+            
+            if (is_multisite()) {
+                add_action('network_admin_menu', [__CLASS__, 'add_network_admin_menu']);
+            }
+            
+            // Clear cache when settings are updated
+            add_action('updated_option', [__CLASS__, 'on_option_updated'], 10, 3);
+        } else {
+            // Frontend-only hooks
+            add_action('wp_head', [__CLASS__, 'inject_tracking_code']);
         }
         
-        // Initialize WordPress performance tracking
+        // Initialize WordPress performance tracking (only when needed)
         self::init_wp_performance_tracking();
+    }
+    
+    /**
+     * Clear cache when relevant options are updated
+     */
+    public static function on_option_updated($option_name, $old_value, $value) {
+        if (strpos($option_name, 'mixpanel_') === 0) {
+            self::clear_cache();
+        }
     }
     
     /**
@@ -156,7 +183,13 @@ class MixpanelInstrumentation {
      * Check if plugin should be enabled for current site
      */
     private static function is_enabled_for_site() {
+        // Use cached result if available
+        if (self::$cached_enabled !== null) {
+            return self::$cached_enabled;
+        }
+        
         if (!is_multisite()) {
+            self::$cached_enabled = true;
             return true;
         }
         
@@ -166,40 +199,118 @@ class MixpanelInstrumentation {
         
         switch ($network_enabled) {
             case 'none':
-                return false;
+                self::$cached_enabled = false;
+                break;
             case 'all':
-                return true;
+                self::$cached_enabled = true;
+                break;
             case 'specific':
                 $ids = array_filter(array_map('trim', explode(',', $network_sites)));
-                return in_array($site_id, $ids);
+                self::$cached_enabled = in_array((string)$site_id, $ids, true);
+                break;
             default:
-                return false;
+                self::$cached_enabled = false;
         }
+        
+        return self::$cached_enabled;
     }
     
     /**
-     * Get effective settings (network or site)
+     * Get effective settings (network or site) with caching
      */
     private static function get_effective_settings() {
-        $network_allow_override = is_multisite() ? get_site_option('mixpanel_network_allow_override', 0) : 0;
-        $override_network = is_multisite() ? get_option('mixpanel_override_network', 0) : 0;
+        // Return cached settings if available
+        if (self::$cached_settings !== null) {
+            return self::$cached_settings;
+        }
+        
+        $is_multisite = is_multisite();
+        $network_allow_override = $is_multisite ? get_site_option('mixpanel_network_allow_override', 0) : 0;
+        $override_network = $is_multisite ? get_option('mixpanel_override_network', 0) : 0;
         $use_site_settings = ($network_allow_override && $override_network);
         
-        return [
-            'token' => $use_site_settings ? get_option('mixpanel_token') : (is_multisite() ? get_site_option('mixpanel_token') : get_option('mixpanel_token')),
-            'session_replay' => $use_site_settings ? get_option('mixpanel_session_replay') : (is_multisite() ? get_site_option('mixpanel_session_replay') : get_option('mixpanel_session_replay')),
-            'tracking_mode' => $use_site_settings ? get_option('mixpanel_tracking_mode', 'pageviews') : (is_multisite() ? get_site_option('mixpanel_tracking_mode', 'pageviews') : get_option('mixpanel_tracking_mode', 'pageviews')),
-            'specific_events' => $use_site_settings ? get_option('mixpanel_specific_events', '') : (is_multisite() ? get_site_option('mixpanel_specific_events', '') : get_option('mixpanel_specific_events', '')),
-            'wp_performance_tracking' => $use_site_settings ? get_option('mixpanel_wp_performance_tracking', 0) : (is_multisite() ? get_site_option('mixpanel_wp_performance_tracking', 0) : get_option('mixpanel_wp_performance_tracking', 0))
-        ];
+        // Build settings array with optimized conditional logic
+        self::$cached_settings = [];
+        
+        foreach (['token', 'session_replay', 'tracking_mode', 'specific_events', 'wp_performance_tracking'] as $key) {
+            $option_name = 'mixpanel_' . $key;
+            $default = ($key === 'tracking_mode') ? 'pageviews' : ($key === 'specific_events' ? '' : 0);
+            
+            if ($use_site_settings) {
+                self::$cached_settings[$key] = get_option($option_name, $default);
+            } elseif ($is_multisite) {
+                self::$cached_settings[$key] = get_site_option($option_name, $default);
+            } else {
+                self::$cached_settings[$key] = get_option($option_name, $default);
+            }
+        }
+        
+        return self::$cached_settings;
     }
     
     /**
-     * Get current user data for Mixpanel identification
+     * Get optimized autocapture configuration
+     */
+    private static function get_autocapture_config($tracking_mode, $specific_events = '') {
+        // Define base configurations for better performance
+        static $base_configs = [
+            'pageviews' => [
+                'pageview' => 'full-url',
+                'click' => false,
+                'input' => false,
+                'rage_click' => false,
+                'scroll' => false,
+                'submit' => false,
+                'capture_text_content' => false
+            ],
+            'all' => [
+                'pageview' => 'full-url',
+                'click' => true,
+                'input' => true,
+                'rage_click' => true,
+                'scroll' => true,
+                'submit' => true,
+                'capture_text_content' => true
+            ]
+        ];
+        
+        if ($tracking_mode === 'pageviews') {
+            return $base_configs['pageviews'];
+        } elseif ($tracking_mode === 'all') {
+            return $base_configs['all'];
+        } elseif ($tracking_mode === 'specific') {
+            // Optimize specific events parsing
+            $events = array_flip(array_filter(array_map('trim', explode(',', $specific_events))));
+            return [
+                'pageview' => isset($events['pageview']) ? 'full-url' : false,
+                'click' => isset($events['click']),
+                'input' => isset($events['input']),
+                'rage_click' => isset($events['rage_click']),
+                'scroll' => isset($events['scroll']),
+                'submit' => isset($events['submit']),
+                'capture_text_content' => isset($events['capture_text_content'])
+            ];
+        }
+        
+        return $base_configs['pageviews']; // Default fallback
+    }
+    
+    /**
+     * Get current user data for Mixpanel identification with caching
      */
     private static function get_user_data() {
+        static $cached_user_data = null;
+        static $cached_user_id = null;
+        
         if (!is_user_logged_in()) {
             return null;
+        }
+        
+        $current_user_id = get_current_user_id();
+        
+        // Return cached data if user hasn't changed
+        if ($cached_user_data !== null && $cached_user_id === $current_user_id) {
+            return $cached_user_data;
         }
         
         $user = wp_get_current_user();
@@ -216,12 +327,12 @@ class MixpanelInstrumentation {
             'user_url' => $user->user_url
         );
         
-        // Add custom fields if they exist
+        // Add custom fields if they exist (optimized lookup)
         $meta_fields = array('first_name', 'last_name', 'nickname', 'description');
+        $user_meta = get_user_meta($user->ID);
         foreach ($meta_fields as $field) {
-            $value = get_user_meta($user->ID, $field, true);
-            if (!empty($value)) {
-                $properties[$field] = $value;
+            if (!empty($user_meta[$field][0])) {
+                $properties[$field] = $user_meta[$field][0];
             }
         }
         
@@ -238,11 +349,22 @@ class MixpanelInstrumentation {
             $event_properties['site_url'] = get_site_url();
         }
         
-        return array(
+        $cached_user_data = array(
             'user_id' => $user->ID,
             'properties' => $properties,
             'event_properties' => $event_properties
         );
+        $cached_user_id = $current_user_id;
+        
+        return $cached_user_data;
+    }
+    
+    /**
+     * Clear cached data when settings change
+     */
+    public static function clear_cache() {
+        self::$cached_settings = null;
+        self::$cached_enabled = null;
     }
     
     /**
@@ -267,43 +389,7 @@ class MixpanelInstrumentation {
         <?php
         // Configure Mixpanel initialization based on tracking mode
         $tracking_mode = $settings['tracking_mode'];
-        $autocapture_config = [];
-        
-        if ($tracking_mode === 'pageviews') {
-            // Only track pageviews
-            $autocapture_config = [
-                'pageview' => 'full-url',
-                'click' => false,
-                'input' => false,
-                'rage_click' => false,
-                'scroll' => false,
-                'submit' => false,
-                'capture_text_content' => false
-            ];
-        } elseif ($tracking_mode === 'all') {
-            // Track all events with full autocapture
-            $autocapture_config = [
-                'pageview' => 'full-url',
-                'click' => true,
-                'input' => true,
-                'rage_click' => true,
-                'scroll' => true,
-                'submit' => true,
-                'capture_text_content' => true
-            ];
-        } elseif ($tracking_mode === 'specific') {
-            // Parse specific events and configure autocapture accordingly
-            $specific_events = array_filter(array_map('trim', explode(',', $settings['specific_events'])));
-            $autocapture_config = [
-                'pageview' => in_array('pageview', $specific_events) ? 'full-url' : false,
-                'click' => in_array('click', $specific_events),
-                'input' => in_array('input', $specific_events),
-                'rage_click' => in_array('rage_click', $specific_events),
-                'scroll' => in_array('scroll', $specific_events),
-                'submit' => in_array('submit', $specific_events),
-                'capture_text_content' => in_array('capture_text_content', $specific_events)
-            ];
-        }
+        $autocapture_config = self::get_autocapture_config($tracking_mode, $settings['specific_events']);
         ?>
         
         // Initialize Mixpanel with autocapture configuration
@@ -493,21 +579,29 @@ class MixpanelInstrumentation {
     }
     
     /**
-     * Initialize WordPress performance tracking
+     * Initialize WordPress performance tracking with optimizations
      */
     public static function init_wp_performance_tracking() {
+        // Early exit if performance tracking is disabled
+        if (!self::is_enabled_for_site()) {
+            return;
+        }
+        
         $settings = self::get_effective_settings();
-        $wp_performance_enabled = $settings['wp_performance_tracking'] ?? get_option('mixpanel_wp_performance_tracking', 0);
+        $wp_performance_enabled = $settings['wp_performance_tracking'] ?? 0;
         
         if (!$wp_performance_enabled) {
             return;
         }
         
-        // Track page load time
-        add_action('wp_footer', [__CLASS__, 'track_page_performance'], 999);
-        
-        // Hook into WordPress core functions for performance measurement
-        add_action('init', [__CLASS__, 'setup_wp_function_tracking'], 1);
+        // Only hook performance tracking on frontend
+        if (!is_admin() && !wp_doing_ajax()) {
+            // Track page load time
+            add_action('wp_footer', [__CLASS__, 'track_page_performance'], 999);
+            
+            // Hook into WordPress core functions for performance measurement
+            add_action('init', [__CLASS__, 'setup_wp_function_tracking'], 1);
+        }
     }
     
     /**
