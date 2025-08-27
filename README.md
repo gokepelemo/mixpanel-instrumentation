@@ -1,6 +1,8 @@
 # Mixpanel Instrumentation for WordPress
 
-A comprehensive WordPress plugin that integrates Mixpanel analytics and session replay into your site. Perfect for single-site and multisite installations with powerful network admin controls.
+A WordPress plugin that integrates Mixpanel analytics and session replay into your site. Perfect for single-site and multisite installations with powerful network admin controls.
+
+Created with the Claude Sonnet 4 LLM.
 
 ## ✨ Features
 
